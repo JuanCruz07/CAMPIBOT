@@ -1,0 +1,106 @@
+# -*- coding: ISO-8859-1 -*-
+# -*- coding: utf-8 -*-
+import os
+import time
+from picamera import PiCamera
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore, storage
+import threading
+import random
+
+# Inicializar la credencial de Firebase
+cred = credentials.Certificate('/home/TI/firebase-project/campibot-a2df0-firebase-adminsdk-mgttx-2fdeee356d.json')
+firebase_admin.initialize_app(cred, {
+    'storageBucket': 'bucket_campibot'
+})
+
+# Configurar la cámara
+camera = PiCamera()
+camera.rotation = 180
+camera.resolution = (1080, 768)
+
+# Obtener una referencia a la colección "tasks"
+db = firestore.client()
+tasks_ref = db.collection(u'tasks')
+
+# Bandera para indicar si se debe tomar una foto
+take_photo = False
+
+# Función para verificar si se ha enviado una tarea con la descripción 2 igual a "B"
+def check_tasks():
+    global take_photo
+    while True:
+        task_query = tasks_ref.where("tarea.description2", "==", "B").stream()
+        for task in task_query:
+            take_photo = True
+        time.sleep(1)
+
+# Crear un hilo para verificar continuamente la base de datos
+task_thread = threading.Thread(target=check_tasks)
+task_thread.start()
+
+# Consultamos el campo que contiene el nombre del archivo
+doc_ref = tasks_ref.document(u'control')
+
+def on_snapshot(doc_snapshot, changes, read_time):
+    global take_photo
+    for doc in doc_snapshot:
+        print(u'Campo "orden": {}'.format(doc.to_dict().get(u'orden')))
+        tarea = doc.to_dict().get(u'tarea')
+        if tarea:
+            print(u'Campo "tarea":')
+            for key, value in tarea.items():
+                print(u'  {}: {}'.format(key, value))
+            if tarea.get(u'description2') == 'B':
+                take_photo = True
+
+doc_watch = doc_ref.on_snapshot(on_snapshot)
+
+# Define a function to generate a random number
+def get_random_number():
+    return random.randint(1, 100)
+
+# Define a function to send data to Firestore
+def send_data_to_firestore():
+    # Generate a random number
+    data = {
+        u'ValorX': get_random_number(),
+        u'ValorY': get_random_number(),
+        u'ValorZ': get_random_number()
+    }
+    
+    # Send the data to Firestore
+    db.collection(u'tasks').document(u'S0duSWLkPsbWfpJBj67Q').set(data)
+    
+    print("Dato enviado: {}".format(data))
+
+# Crear un hilo para enviar datos a Firestore
+send_thread = threading.Thread(target=send_data_to_firestore)
+send_thread.start()
+
+while True:
+    send_data_to_firestore()
+    if take_photo:
+        # Tomar una foto
+        filename = 'Foto.jpg'
+        filepath = os.path.join('/home/TI/firebase-project', filename)
+        camera.capture(filepath)
+
+        # Subir la foto a Firebase Storage
+        bucket = storage.bucket()
+        blob = bucket.blob(filename)
+        blob.upload_from_filename(filepath)
+
+        # Obtener la URL de descarga de la foto
+        url = blob.public_url
+
+        print('La foto ha sido cargada exitosamente a:', url)
+
+        # Actualizar el campo "description2" a vacío
+        tasks_ref.document(u'control').update({u'tarea.description2': ''})
+
+        take_photo = False
+
+    # Esperar 1 segundo antes de revisar de nuevo
+    time.sleep(1)
